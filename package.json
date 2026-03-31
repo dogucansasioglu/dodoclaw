@@ -1,0 +1,13 @@
+{
+  "name": "dodoclaw",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/run.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "discord.js": "^14.18.0"
+  }
+}
