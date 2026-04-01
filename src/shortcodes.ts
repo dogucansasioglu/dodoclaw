@@ -99,3 +99,20 @@ export function parseShortcodes(text: string): ParseResult {
 
   return { text, stickers, gifs };
 }
+
+/**
+ * Strip all shortcodes from text, returning plain text.
+ * Removes :Name:, :sticker:Name:, and :gif:Name: patterns.
+ * Used for Telegram where Discord custom emojis/stickers/GIFs don't work.
+ */
+export function stripShortcodes(text: string): string {
+  return text
+    .replace(/:sticker:\w+:/g, "")
+    .replace(/:gif:\w+:/g, "")
+    .replace(/(?<!<a?)(?<!<):(\w+):(?!\d)/g, (_match, name: string) => {
+      // Only strip if it's a known shortcode — leave unknown :text: as-is
+      return SHORTCODES[name] ? "" : _match;
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

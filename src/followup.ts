@@ -3,6 +3,7 @@ import { log } from "./logger";
 
 export interface PendingFollowup {
   thread_id: string;
+  platform: string;
   followup_at: number;
 }
 
@@ -14,25 +15,32 @@ export class FollowupStore {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS followups (
         thread_id TEXT PRIMARY KEY,
+        platform TEXT NOT NULL DEFAULT 'discord',
         followup_at INTEGER NOT NULL,
         created_at INTEGER DEFAULT (unixepoch())
       )
     `);
+    // Migration: add platform column to existing tables
+    try {
+      this.db.run(`ALTER TABLE followups ADD COLUMN platform TEXT NOT NULL DEFAULT 'discord'`);
+    } catch {
+      // Column already exists
+    }
   }
 
   /**
    * Schedule (or reset) a followup for a thread.
    * Random delay between 30-60 minutes from now.
    */
-  schedule(threadId: string): void {
+  schedule(threadId: string, platform: string = "discord"): void {
     const delayMinutes = 30 + Math.floor(Math.random() * 31); // 30-60
     const followupAt = Math.floor(Date.now() / 1000) + delayMinutes * 60;
     this.db.run(
-      `INSERT INTO followups (thread_id, followup_at) VALUES (?, ?)
-       ON CONFLICT(thread_id) DO UPDATE SET followup_at = ?, created_at = unixepoch()`,
-      [threadId, followupAt, followupAt]
+      `INSERT INTO followups (thread_id, platform, followup_at) VALUES (?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET followup_at = ?, platform = ?, created_at = unixepoch()`,
+      [threadId, platform, followupAt, followupAt, platform]
     );
-    log.debug(`Followup scheduled for thread ${threadId} in ${delayMinutes}m`);
+    log.debug(`Followup scheduled for thread ${threadId} (${platform}) in ${delayMinutes}m`);
   }
 
   /**
@@ -49,7 +57,7 @@ export class FollowupStore {
     const now = Math.floor(Date.now() / 1000);
     return this.db
       .query<PendingFollowup, [number]>(
-        "SELECT thread_id, followup_at FROM followups WHERE followup_at <= ?"
+        "SELECT thread_id, platform, followup_at FROM followups WHERE followup_at <= ?"
       )
       .all(now);
   }

@@ -5,6 +5,7 @@ import { log } from "./logger";
 export interface CronTask {
   id: string;
   thread_id: string;
+  platform: string;
   schedule: string;
   prompt: string;
   description: string;
@@ -21,6 +22,7 @@ export class CronStore {
       CREATE TABLE IF NOT EXISTS cron_tasks (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
+        platform TEXT NOT NULL DEFAULT 'discord',
         schedule TEXT NOT NULL,
         prompt TEXT NOT NULL,
         description TEXT DEFAULT '',
@@ -28,13 +30,19 @@ export class CronStore {
         last_run_at INTEGER
       )
     `);
+    // Migration: add platform column to existing tables
+    try {
+      this.db.run(`ALTER TABLE cron_tasks ADD COLUMN platform TEXT NOT NULL DEFAULT 'discord'`);
+    } catch {
+      // Column already exists
+    }
   }
 
-  create(threadId: string, schedule: string, prompt: string, description: string): string {
+  create(threadId: string, schedule: string, prompt: string, description: string, platform: string = "discord"): string {
     const id = randomBytes(4).toString("hex");
     this.db.run(
-      "INSERT INTO cron_tasks (id, thread_id, schedule, prompt, description) VALUES (?, ?, ?, ?, ?)",
-      [id, threadId, schedule, prompt, description]
+      "INSERT INTO cron_tasks (id, thread_id, platform, schedule, prompt, description) VALUES (?, ?, ?, ?, ?, ?)",
+      [id, threadId, platform, schedule, prompt, description]
     );
     return id;
   }

@@ -27,7 +27,6 @@ function logStreamEvent(tag: string, msg: any): void {
   } else if (msg.type === "assistant" && msg.message?.content) {
     for (const block of msg.message.content) {
       if (block.type === "text" && block.text) {
-        // Print text output — show full text, not truncated
         const lines = block.text.split("\n");
         for (const line of lines) {
           console.log(`${c.dim}${tag}${c.reset} ${line}`);
@@ -65,7 +64,6 @@ function logStreamEvent(tag: string, msg: any): void {
           const errText = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? "");
           console.log(`${c.dim}${tag}${c.reset} ${c.red}✗ Error: ${errText.slice(0, 200)}${c.reset}`);
         }
-        // Skip success results — too verbose
       }
     }
   } else if (msg.type === "result") {
@@ -92,6 +90,7 @@ export interface ClaudeOptions {
   apiPort: number;
   threadId: string;
   threadName?: string;
+  platform?: "discord" | "telegram";
   signal?: AbortSignal;
   userTimezone?: string;
   messageTimestamp?: number;
@@ -111,32 +110,46 @@ function formatUserLocalTime(timestamp: number, timezone: string): string {
   }).format(date);
 }
 
-function buildSystemPrompt(apiPort: number, threadId: string, userTimezone?: string, messageTimestamp?: number): string {
+function buildSystemPrompt(apiPort: number, threadId: string, platform: "discord" | "telegram", userTimezone?: string, messageTimestamp?: number): string {
   const base = `http://localhost:${apiPort}/thread/${threadId}`;
-  return [
-    "You are connected to a Discord thread. The user is chatting with you from Discord.",
-    "IMPORTANT: You MUST send ALL your responses via the Discord API using curl. The user CANNOT see your stdout. Use the Bash tool with curl for every message.",
+  const isDiscord = platform === "discord";
+
+  const platformIntro = isDiscord
+    ? "You are connected to a Discord thread. The user is chatting with you from Discord."
+    : "You are connected to a Telegram chat. The user is chatting with you from Telegram.";
+
+  const lines = [
+    platformIntro,
+    "IMPORTANT: You MUST send ALL your responses via the API using curl. The user CANNOT see your stdout. Use the Bash tool with curl for every message.",
     "",
     "Available endpoints:",
     `• Send message: curl -s -X POST ${base}/reply -H 'Content-Type: application/json' -d '{"text":"your message"}'`,
     `• Send file: curl -s -X POST ${base}/send-file -H 'Content-Type: application/json' -d '{"file_path":"/absolute/path","message":"optional caption"}'`,
-    `• React with emoji: curl -s -X POST ${base}/react -H 'Content-Type: application/json' -d '{"emoji":"👍"}'`,
+    ...(isDiscord
+      ? [`• React with emoji: curl -s -X POST ${base}/react -H 'Content-Type: application/json' -d '{"emoji":"👍"}'`]
+      : []),
     `• Create cron job: curl -s -X POST ${base}/cron -H 'Content-Type: application/json' -d '{"schedule":"0 9 * * *","prompt":"do something","description":"daily task"}'`,
     `• List cron jobs: curl -s ${base}/cron`,
     `• Delete cron job: curl -s -X DELETE ${base}/cron -H 'Content-Type: application/json' -d '{"id":"task_id"}'`,
     "",
     "Guidelines:",
     "- Send multiple reply messages as you work to show progress",
-    "- Keep messages concise and Discord-friendly (markdown supported)",
+    ...(isDiscord
+      ? ["- Keep messages concise and Discord-friendly (markdown supported)"]
+      : [
+          "- Keep messages concise and Telegram-friendly (markdown supported)",
+          "- Do NOT use custom emoji shortcodes, stickers, or GIFs — Telegram does not support them",
+        ]),
     "- For long responses, split into multiple reply calls",
     "- You can still use all your normal tools (Read, Edit, Bash, Grep, etc.) for coding tasks",
-    ...(userTimezone && messageTimestamp
-      ? [
-          "",
-          `userLocalTime: ${formatUserLocalTime(messageTimestamp, userTimezone)} (${userTimezone})`,
-        ]
-      : []),
-  ].join("\n");
+    "- NEVER call Discord or Telegram APIs directly (no getUpdates, no sendMessage to api.telegram.org, etc.) — the bot framework handles that. Only use the localhost API endpoints above.",
+  ];
+
+  if (userTimezone && messageTimestamp) {
+    lines.push("", `userLocalTime: ${formatUserLocalTime(messageTimestamp, userTimezone)} (${userTimezone})`);
+  }
+
+  return lines.join("\n");
 }
 
 // Idle timeout: kill process if no output for this many ms
@@ -151,6 +164,7 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
     apiPort,
     threadId,
     threadName,
+    platform = "discord",
     signal,
     userTimezone,
     messageTimestamp,
@@ -159,7 +173,7 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   const tag = threadName ? `[#${threadName}]` : `[${threadId.slice(0, 8)}]`;
   const newSessionId = resumeSessionId ? undefined : randomUUID();
 
-  const systemPrompt = buildSystemPrompt(apiPort, threadId, userTimezone, messageTimestamp);
+  const systemPrompt = buildSystemPrompt(apiPort, threadId, platform, userTimezone, messageTimestamp);
 
   const args = [
     "-p",
@@ -184,7 +198,7 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
     cwd: workingDir,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env },
+    env: { ...process.env, DISCORD_TOKEN: undefined, TELEGRAM_TOKEN: undefined },
   });
 
   if (signal) {
@@ -196,7 +210,6 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   let lastActivityTime = Date.now();
   let idleKilled = false;
 
-  // Idle watchdog: checks every 30s if there's been activity
   const idleWatchdog = setInterval(() => {
     const idleMs = Date.now() - lastActivityTime;
     if (idleMs >= IDLE_TIMEOUT_MS) {
@@ -231,7 +244,6 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
           continue;
         }
 
-        // Stream formatted output to terminal
         logStreamEvent(tag, msg);
 
         if (msg.type === "system" && msg.subtype === "init") {
@@ -273,25 +285,32 @@ export interface BtwOptions {
   apiPort: number;
   threadId: string;
   threadName?: string;
+  platform?: "discord" | "telegram";
   signal?: AbortSignal;
 }
 
 function getProjectPath(workingDir: string): string {
-  // Convert working dir to Claude Code's project path encoding
-  // C:\Users\You\project -> C--Users-You-project
-  const normalized = workingDir.replace(/\//g, "\\"); // normalize forward slashes
+  const normalized = workingDir.replace(/\//g, "\\");
   return normalized.replace(/[:\\]/g, "-");
 }
 
-function buildBtwSystemPrompt(apiPort: number, threadId: string, logPath: string): string {
+function buildBtwSystemPrompt(apiPort: number, threadId: string, logPath: string, platform: "discord" | "telegram"): string {
   const base = `http://localhost:${apiPort}/thread/${threadId}`;
+  const isDiscord = platform === "discord";
+
+  const platformIntro = isDiscord
+    ? "You are connected to a Discord thread. The user is chatting with you from Discord."
+    : "You are connected to a Telegram chat. The user is chatting with you from Telegram.";
+
   return [
-    "You are connected to a Discord thread. The user is chatting with you from Discord.",
-    "IMPORTANT: You MUST send ALL your responses via the Discord API using curl. The user CANNOT see your stdout. Use the Bash tool with curl for every message.",
+    platformIntro,
+    "IMPORTANT: You MUST send ALL your responses via the API using curl. The user CANNOT see your stdout. Use the Bash tool with curl for every message.",
     "",
     "Available endpoints:",
     `• Send message: curl -s -X POST ${base}/reply -H 'Content-Type: application/json' -d '{"text":"your message"}'`,
-    `• React with emoji: curl -s -X POST ${base}/react -H 'Content-Type: application/json' -d '{"emoji":"👍"}'`,
+    ...(isDiscord
+      ? [`• React with emoji: curl -s -X POST ${base}/react -H 'Content-Type: application/json' -d '{"emoji":"👍"}'`]
+      : []),
     "",
     "THIS IS A /btw (by the way) SESSION.",
     "There is currently another Claude session actively working in this thread.",
@@ -300,6 +319,7 @@ function buildBtwSystemPrompt(apiPort: number, threadId: string, logPath: string
     "Your job: Read that log file to understand what the other session is doing, then answer the user's question.",
     "This is a ONE-SHOT session — answer and you're done. Keep it concise.",
     "Do NOT modify any files or make changes — you are read-only, just answering a side question.",
+    ...(isDiscord ? [] : ["Do NOT use custom emoji shortcodes, stickers, or GIFs — Telegram does not support them."]),
   ].join("\n");
 }
 
@@ -312,6 +332,7 @@ export async function runBtwClaude(options: BtwOptions): Promise<ClaudeResult> {
     apiPort,
     threadId,
     threadName,
+    platform = "discord",
     signal,
   } = options;
 
@@ -321,7 +342,7 @@ export async function runBtwClaude(options: BtwOptions): Promise<ClaudeResult> {
   const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? "~";
   const logPath = `${homeDir}/.claude/projects/${projectPath}/${activeSessionId}.jsonl`;
 
-  const systemPrompt = buildBtwSystemPrompt(apiPort, threadId, logPath);
+  const systemPrompt = buildBtwSystemPrompt(apiPort, threadId, logPath, platform);
 
   const args = [
     "-p",
@@ -340,7 +361,7 @@ export async function runBtwClaude(options: BtwOptions): Promise<ClaudeResult> {
     cwd: workingDir,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env },
+    env: { ...process.env, DISCORD_TOKEN: undefined, TELEGRAM_TOKEN: undefined },
   });
 
   if (signal) {
