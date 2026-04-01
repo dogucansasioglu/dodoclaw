@@ -1,13 +1,13 @@
-import type { ThreadChannel, Message } from "discord.js";
 import { chunkMessage } from "./formatter";
-import { parseShortcodes, resolveEmoji } from "./shortcodes";
+import { parseShortcodes, stripShortcodes, resolveEmoji } from "./shortcodes";
 import { log } from "./logger";
 import type { CronStore } from "./cron";
 import { RalphManager, formatIterationUpdate, formatRalphSummary, createRalphBranch, createRalphPR } from "./ralph";
+import type { PlatformContext } from "./platform";
 
 export interface ApiContext {
-  threads: Map<string, ThreadChannel>;
-  lastMessages: Map<string, Message>;
+  platforms: Map<string, PlatformContext>;
+  lastMessageReact: Map<string, (emoji: string) => Promise<void>>;
   cronStore: CronStore;
   ralphManager: RalphManager;
   /** Track threads that received at least one reply via API */
@@ -29,9 +29,9 @@ export function startApi(context: ApiContext): { port: number; stop: () => void 
 
       const threadId = parts[1];
       const action = parts[2];
-      const thread = context.threads.get(threadId);
+      const platform = context.platforms.get(threadId);
 
-      if (!thread) {
+      if (!platform) {
         return json({ error: "Thread not found" }, 404);
       }
 
@@ -47,53 +47,62 @@ export function startApi(context: ApiContext): { port: number; stop: () => void 
 
         if (req.method === "POST" && action === "reply") {
           const raw = body.text ?? "";
-          const { text, stickers, gifs } = parseShortcodes(raw);
 
-          // Send text message (if any remains after extraction)
-          if (text) {
-            const chunks = chunkMessage(text);
-            for (const chunk of chunks) {
-              await thread.send(chunk);
+          if (platform.platform === "discord") {
+            // Discord: parse shortcodes for stickers, GIFs, emojis
+            const { text, stickers, gifs } = parseShortcodes(raw);
+
+            if (text) {
+              const chunks = chunkMessage(text);
+              for (const chunk of chunks) {
+                await platform.sendMessage(chunk);
+              }
+            }
+
+            // Send stickers as separate messages (Discord-only)
+            for (const stickerId of stickers) {
+              await platform.sendSticker!(stickerId);
+            }
+
+            // Send GIFs as separate messages (Discord-only)
+            for (const gifUrl of gifs) {
+              await platform.sendMessage(gifUrl);
+            }
+          } else {
+            // Telegram: strip shortcodes, send plain text
+            const text = stripShortcodes(raw);
+            if (text) {
+              const chunks = chunkMessage(text, 4096);
+              for (const chunk of chunks) {
+                await platform.sendMessage(chunk);
+              }
             }
           }
 
-          // Send stickers as separate messages
-          for (const stickerId of stickers) {
-            await thread.send({ stickers: [stickerId] });
-          }
-
-          // Send GIFs as separate messages
-          for (const gifUrl of gifs) {
-            await thread.send(gifUrl);
-          }
-
           context.repliedThreads.add(threadId);
-          log.info(`[#${thread.name}] Claude sent: ${raw.slice(0, 80)}${raw.length > 80 ? "..." : ""}`);
+          log.info(`[#${platform.threadName}] Claude sent: ${raw.slice(0, 80)}${raw.length > 80 ? "..." : ""}`);
           return json({ ok: true });
         }
 
         if (req.method === "POST" && action === "send-file") {
-          await thread.send({
-            content: body.message || undefined,
-            files: [body.file_path],
-          });
-          log.info(`[#${thread.name}] Claude sent file: ${body.file_path}`);
+          await platform.sendFile(body.file_path, body.message || undefined);
+          log.info(`[#${platform.threadName}] Claude sent file: ${body.file_path}`);
           return json({ ok: true });
         }
 
         if (req.method === "POST" && action === "react") {
-          const lastMsg = context.lastMessages.get(threadId);
-          if (lastMsg) {
-            await lastMsg.react(body.emoji);
-            log.info(`[#${thread.name}] Claude reacted: ${body.emoji}`);
+          const reactFn = context.lastMessageReact.get(threadId);
+          if (reactFn) {
+            await reactFn(body.emoji);
+            log.info(`[#${platform.threadName}] Claude reacted: ${body.emoji}`);
             return json({ ok: true });
           }
           return json({ error: "No message to react to" }, 404);
         }
 
         if (req.method === "POST" && action === "cron") {
-          const id = context.cronStore.create(threadId, body.schedule, body.prompt, body.description ?? "");
-          log.info(`[#${thread.name}] Cron created: ${id} — ${body.schedule}`);
+          const id = context.cronStore.create(threadId, body.schedule, body.prompt, body.description ?? "", platform.platform);
+          log.info(`[#${platform.threadName}] Cron created: ${id} — ${body.schedule} (${platform.platform})`);
           return json({ ok: true, id });
         }
 
@@ -121,16 +130,16 @@ export function startApi(context: ApiContext): { port: number; stop: () => void 
               return json({ error: "Missing required fields: workingDir, iterations, prompt" }, 400);
             }
 
-            log.info(`[#${thread.name}] Ralph starting: ${iterations} iterations`);
+            log.info(`[#${platform.threadName}] Ralph starting: ${iterations} iterations`);
 
             // Create branch before starting loop
             let branchName: string | undefined;
             try {
               branchName = await createRalphBranch(workingDir);
-              await thread.send(`Ralph started on branch \`${branchName}\` — ${iterations} iterations ${resolveEmoji("Bongo_Code", "⌨️")}`);
+              await platform.sendMessage(`Ralph started on branch \`${branchName}\` — ${iterations} iterations ${resolveEmoji("Bongo_Code", "⌨️")}`);
             } catch (err: any) {
-              log.warn(`[#${thread.name}] Ralph branch creation failed: ${err.message}`);
-              await thread.send(`Ralph starting (branch creation failed: ${err.message})`);
+              log.warn(`[#${platform.threadName}] Ralph branch creation failed: ${err.message}`);
+              await platform.sendMessage(`Ralph starting (branch creation failed: ${err.message})`);
             }
 
             // Start loop in background (don't await)
@@ -142,7 +151,7 @@ export function startApi(context: ApiContext): { port: number; stop: () => void 
               prompt,
               onIterationComplete: async (update) => {
                 const msg = formatIterationUpdate(update);
-                await thread.send(msg).catch(() => {});
+                await platform.sendMessage(msg).catch(() => {});
               },
               onDone: async (summary) => {
                 let prUrl: string | undefined;
@@ -150,11 +159,11 @@ export function startApi(context: ApiContext): { port: number; stop: () => void 
                   try {
                     prUrl = await createRalphPR(workingDir, branchName, summary);
                   } catch (err: any) {
-                    log.warn(`[#${thread.name}] Ralph PR creation failed: ${err.message}`);
+                    log.warn(`[#${platform.threadName}] Ralph PR creation failed: ${err.message}`);
                   }
                 }
                 const msg = formatRalphSummary(summary, prUrl);
-                await thread.send(msg).catch(() => {});
+                await platform.sendMessage(msg).catch(() => {});
               },
             });
 
@@ -164,7 +173,7 @@ export function startApi(context: ApiContext): { port: number; stop: () => void 
           if (req.method === "POST" && subAction === "stop") {
             const stopped = context.ralphManager.stop(threadId);
             if (stopped) {
-              log.warn(`[#${thread.name}] Ralph stopped by user`);
+              log.warn(`[#${platform.threadName}] Ralph stopped by user`);
             }
             return json({ ok: stopped });
           }
@@ -176,7 +185,7 @@ export function startApi(context: ApiContext): { port: number; stop: () => void 
 
         return json({ error: `Unknown action: ${action}` }, 400);
       } catch (err: any) {
-        log.error(`[#${thread.name}] API error: ${err.message}`);
+        log.error(`[#${platform.threadName}] API error: ${err.message}`);
         return json({ error: err.message }, 500);
       }
     },

@@ -1,0 +1,21 @@
+# dodoclaw Telegram Sync - Progress Log
+
+## Task 1: Add platform abstraction layer (2026-04-02)
+
+**New files created:**
+- src/platform.ts — PlatformContext interface (discord | telegram)
+- src/process.ts — Shared processMessage() using PlatformContext
+- src/scheduler.ts — Shared cron + followup scheduler
+
+**Updated files:**
+- src/api.ts — Platform-aware API (platforms Map, lastMessageReact Map, Discord/Telegram reply branching, stripShortcodes for Telegram)
+- src/bot.ts — Refactored to use BotDeps + shared processMessage from process.ts, exports discordPlatform()
+- src/claude.ts — Platform-aware system prompts (Discord vs Telegram), env scrubbing (DISCORD_TOKEN, TELEGRAM_TOKEN)
+- src/config.ts — Optional discordToken/telegramToken/telegramForumChatId, dbPath default ./dodoclaw.db preserved
+- src/index.ts — Shared infrastructure (queue, cronStore, settings, followupStore), telegram-bot import commented out for Task 2
+- src/cron.ts — Added platform column + migration
+- src/followup.ts — Added platform column + migration, schedule() accepts platform param
+- src/shortcodes.ts — Added stripShortcodes() for Telegram, kept dodoclaw's empty SHORTCODES and resolveEmoji/resolveReaction
+
+**TypeScript:** Compiles clean (bun build --target bun)
+**Discord:** Should work as before (same bot logic, just refactored)
