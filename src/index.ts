@@ -8,7 +8,7 @@ import { FollowupStore } from "./followup";
 import { RalphManager } from "./ralph";
 import { startApi, type ApiContext } from "./api";
 import { createBot } from "./bot";
-// import { createTelegramBot } from "./telegram-bot"; // Task 2: uncomment when telegram-bot.ts exists
+import { createTelegramBot } from "./telegram-bot";
 import { startScheduler } from "./scheduler";
 import { log } from "./logger";
 
@@ -42,7 +42,7 @@ const api = startApi(apiContext);
 const sharedDeps = { config, store, queue, settings, followupStore, apiContext, cronStore, apiPort: api.port };
 
 let discordClient: ReturnType<typeof createBot> | undefined;
-// let telegramBot: ... // Task 2: uncomment when telegram-bot.ts exists
+let telegramBot: ReturnType<typeof createTelegramBot> | undefined;
 
 if (config.discordToken) {
   discordClient = createBot(sharedDeps);
@@ -54,15 +54,14 @@ if (config.discordToken) {
   log.info("No DISCORD_TOKEN — skipping Discord bot");
 }
 
-// Task 2: uncomment when telegram-bot.ts exists
-// if (config.telegramToken) {
-//   telegramBot = createTelegramBot(sharedDeps);
-//   telegramBot.bot.start({
-//     onStart: () => log.ok("Telegram bot online"),
-//   });
-// } else {
-//   log.info("No TELEGRAM_TOKEN — skipping Telegram bot");
-// }
+if (config.telegramToken) {
+  telegramBot = createTelegramBot(sharedDeps);
+  telegramBot.bot.start({
+    onStart: () => log.ok("Telegram bot online"),
+  });
+} else {
+  log.info("No TELEGRAM_TOKEN — skipping Telegram bot");
+}
 
 // Single scheduler for cron + followups across all platforms
 const scheduler = startScheduler(sharedDeps);
@@ -71,7 +70,7 @@ process.on("SIGINT", () => {
   log.info("Shutting down...");
   scheduler.stop();
   discordClient?.destroy();
-  // telegramBot?.stop(); // Task 2: uncomment when telegram-bot.ts exists
+  telegramBot?.stop();
   api.stop();
   db.close();
   log.ok("Goodbye!");

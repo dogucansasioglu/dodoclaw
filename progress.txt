@@ -19,3 +19,18 @@
 
 **TypeScript:** Compiles clean (bun build --target bun)
 **Discord:** Should work as before (same bot logic, just refactored)
+
+## Task 2: Add Telegram bot with grammy (2026-04-02)
+
+**New files created:**
+- src/telegram-bot.ts — Full Telegram bot: forum topic routing, commands (/stop, /new, /timezone, /btw), voice transcription, file downloads, message chunking
+
+**Updated files:**
+- src/index.ts — Uncommented telegram-bot import, added createTelegramBot() startup with conditional on telegramToken, added graceful shutdown
+- .env.example — Added TELEGRAM_TOKEN and TELEGRAM_FORUM_CHAT_ID entries
+
+**Dependencies:**
+- grammy 1.41.1 added via pnpm
+
+**TypeScript:** Compiles clean (bun build --target bun)
+**Telegram:** Starts if TELEGRAM_TOKEN is set, listens to forum topics, processes messages through shared processMessage()

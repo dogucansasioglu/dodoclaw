@@ -61,7 +61,7 @@ Copy from claude-claw and adapt for dodoclaw:
 - [ ] .env.example updated
 - [ ] TypeScript compiles
 
-**Status:** incomplete
+**Status:** complete
 
 ---
 
